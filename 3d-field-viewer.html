@@ -89,7 +89,7 @@ body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #fff; ov
     <option value="wireframe">ワイヤーフレーム</option>
   </select>
   <label style="margin-top:8px;">
-    <input type="checkbox" id="show-points" checked> ポイント表示
+    <input type="checkbox" id="show-points"> ポイント表示
   </label>
   <hr style="margin:10px 0;border-color:#333;">
   <label>雨水シミュレーション</label>
@@ -109,6 +109,19 @@ body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #fff; ov
     <button id="btn-delete" style="flex:1;padding:5px 8px;background:#e53935;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;">データ削除</button>
   </div>
   <input type="file" id="file-import" accept=".csv" style="display:none;">
+  <hr style="margin:10px 0;border-color:#333;">
+  <label>3Dモデル出力</label>
+  <div style="margin-top:4px;">
+    <label style="font-size:11px;">ファイル名
+      <input type="text" id="export-filename" value="field-3d"
+        style="width:100px;padding:2px 4px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;margin-left:4px;font-size:11px;">
+    </label>
+  </div>
+  <div style="display:flex;gap:4px;margin-top:4px;">
+    <button id="btn-export-stl" style="flex:1;padding:5px 8px;background:#6d4c41;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;">STL</button>
+    <button id="btn-export-obj" style="flex:1;padding:5px 8px;background:#6d4c41;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;">OBJ</button>
+    <button id="btn-export-3mf" style="flex:1;padding:5px 8px;background:#6d4c41;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;">3MF</button>
+  </div>
 </div>
 
 <div id="info" style="display:none;">
@@ -127,6 +140,9 @@ body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #fff; ov
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/delaunator@5.0.0/delaunator.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/STLExporter.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 (function() {
   let scene, camera, renderer, controls;
@@ -1503,6 +1519,129 @@ body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #fff; ov
     document.getElementById('info').style.display = 'none';
     document.getElementById('legend').style.display = 'none';
     dropZone.classList.remove('hidden');
+  });
+
+  // === 3D Model Export ===
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function getExportGroup() {
+    if (!terrainMesh) return null;
+    const group = new THREE.Group();
+    // Clone terrain with basic material for export
+    const terrainClone = terrainMesh.clone();
+    terrainClone.material = new THREE.MeshBasicMaterial();
+    group.add(terrainClone);
+    if (baseMesh) {
+      const baseClone = baseMesh.clone();
+      baseClone.material = new THREE.MeshBasicMaterial();
+      group.add(baseClone);
+    }
+    return group;
+  }
+
+  function getExportFilename() {
+    return document.getElementById('export-filename').value.trim() || 'field-3d';
+  }
+
+  // STL Export
+  document.getElementById('btn-export-stl').addEventListener('click', () => {
+    const group = getExportGroup();
+    if (!group) return;
+    const exporter = new THREE.STLExporter();
+    const result = exporter.parse(group, { binary: true });
+    downloadBlob(new Blob([result], { type: 'application/octet-stream' }), getExportFilename() + '.stl');
+  });
+
+  // OBJ Export
+  document.getElementById('btn-export-obj').addEventListener('click', () => {
+    const group = getExportGroup();
+    if (!group) return;
+    const exporter = new THREE.OBJExporter();
+    const result = exporter.parse(group);
+    downloadBlob(new Blob([result], { type: 'text/plain' }), getExportFilename() + '.obj');
+  });
+
+  // 3MF Export
+  document.getElementById('btn-export-3mf').addEventListener('click', async () => {
+    if (!terrainMesh) return;
+    // Merge terrain + base into single vertex/triangle arrays
+    const allVerts = [];
+    const allTris = [];
+    function addMesh(mesh) {
+      const geom = mesh.geometry;
+      const pos = geom.getAttribute('position');
+      const idx = geom.getIndex();
+      const offset = allVerts.length;
+      // Apply mesh world matrix
+      const mat = mesh.matrixWorld;
+      for (let i = 0; i < pos.count; i++) {
+        const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+        v.applyMatrix4(mat);
+        allVerts.push(v);
+      }
+      if (idx) {
+        for (let i = 0; i < idx.count; i += 3) {
+          allTris.push([offset + idx.getX(i), offset + idx.getX(i+1), offset + idx.getX(i+2)]);
+        }
+      } else {
+        for (let i = 0; i < pos.count; i += 3) {
+          allTris.push([offset + i, offset + i + 1, offset + i + 2]);
+        }
+      }
+    }
+    addMesh(terrainMesh);
+    if (baseMesh) addMesh(baseMesh);
+
+    // Build 3MF XML
+    let vxml = '';
+    for (const v of allVerts) {
+      vxml += `        <vertex x="${v.x}" y="${v.y}" z="${v.z}" />\n`;
+    }
+    let txml = '';
+    for (const t of allTris) {
+      txml += `        <triangle v1="${t[0]}" v2="${t[1]}" v3="${t[2]}" />\n`;
+    }
+    const model = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>
+${vxml}        </vertices>
+        <triangles>
+${txml}        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1" />
+  </build>
+</model>`;
+
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />
+</Types>`;
+
+    const rels = `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" />
+</Relationships>`;
+
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', contentTypes);
+    zip.folder('_rels').file('.rels', rels);
+    zip.folder('3D').file('3dmodel.model', model);
+    const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.ms-package.3dmanufacturing' });
+    downloadBlob(blob, getExportFilename() + '.3mf');
   });
 })();
 </script>
