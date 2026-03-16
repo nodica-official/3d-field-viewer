@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D圃場ビューア</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #fff; overflow: hidden; }
+#container { width: 100vw; height: 100vh; }
+#controls {
+  position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.75);
+  padding: 15px; border-radius: 8px; z-index: 10; min-width: 260px;
+}
+#controls h3 { margin-bottom: 10px; font-size: 14px; }
+#controls label { display: block; margin: 6px 0 2px; font-size: 12px; color: #aaa; }
+#controls input[type=range] { width: 100%; }
+#controls .val { font-size: 11px; color: #6f6; text-align: right; }
+#info {
+  position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.75);
+  padding: 10px 15px; border-radius: 8px; z-index: 10; font-size: 12px;
+}
+#drop-zone {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(26,26,46,0.95); z-index: 100;
+}
+#drop-zone .inner {
+  border: 3px dashed #4a9eff; border-radius: 16px; padding: 60px 80px;
+  text-align: center; cursor: pointer;
+}
+#drop-zone h2 { margin-bottom: 10px; }
+#drop-zone p { color: #aaa; font-size: 14px; }
+#drop-zone.hidden { display: none; }
+#loading {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  background: rgba(0,0,0,0.85); padding: 30px 40px; border-radius: 12px;
+  z-index: 200; text-align: center; display: none;
+}
+#loading .spinner {
+  width: 40px; height: 40px; border: 4px solid #333; border-top-color: #4a9eff;
+  border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 15px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+#legend {
+  position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.75);
+  padding: 10px 15px; border-radius: 8px; z-index: 10; font-size: 12px;
+}
+#legend canvas { display: block; margin-top: 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<div id="drop-zone">
+  <div class="inner" id="drop-inner">
+    <h2>CSVファイルをドロップ</h2>
+    <p>またはクリックして選択</p>
+    <p style="margin-top:10px;color:#666;font-size:12px;">トラクター自動操舵のGPSデータ (緯度,経度,標高)</p>
+    <input type="file" id="file-input" accept=".csv" style="display:none;">
+  </div>
+</div>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loading-text">データを読み込み中...</div>
+</div>
+
+<div id="container"></div>
+
+<div id="controls" style="display:none;">
+  <h3>3D圃場ビューア</h3>
+  <label>高さ強調倍率 <span style="font-size:10px;color:#888;">(1x=実寸)</span></label>
+  <input type="range" id="exaggeration" min="1" max="5" value="3" step="1">
+  <div class="val" id="exag-val">3x</div>
+  <div class="val" id="slope-info" style="color:#aaa;font-size:10px;"></div>
+  <label>作業幅 (m)</label>
+  <div style="display:flex;align-items:center;gap:6px;">
+    <input type="number" id="work-width" min="0" max="30" value="0" step="0.1"
+      style="width:70px;padding:3px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;">
+    <span style="font-size:11px;color:#888;">0=未指定</span>
+  </div>
+  <button id="btn-reload" style="margin-top:10px;padding:5px 15px;background:#4a9eff;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:12px;">再構築</button>
+  <hr style="margin:10px 0;border-color:#333;">
+  <label>表示モード</label>
+  <select id="render-mode" style="width:100%;padding:3px;margin-top:3px;">
+    <option value="texture">国土地理院 地図</option>
+    <option value="photo" selected>国土地理院 衛星写真</option>
+    <option value="elevation">標高カラー</option>
+    <option value="wireframe">ワイヤーフレーム</option>
+  </select>
+  <label style="margin-top:8px;">
+    <input type="checkbox" id="show-points" checked> ポイント表示
+  </label>
+  <hr style="margin:10px 0;border-color:#333;">
+  <label>雨水シミュレーション</label>
+  <div style="margin-top:4px;">
+    <label style="font-size:11px;">
+      降水量 (mm/総量)
+      <input type="number" id="rain-amount" min="1" max="200" value="30" step="5"
+        style="width:55px;padding:2px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;margin-left:4px;">
+    </label>
+  </div>
+  <button id="btn-rain" style="margin-top:6px;padding:5px 15px;background:#2196F3;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:12px;width:100%;">降雨シミュレーション開始</button>
+  <button id="btn-rain-clear" style="margin-top:4px;padding:4px 10px;background:#555;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;width:100%;display:none;">水面クリア</button>
+  <hr style="margin:10px 0;border-color:#333;">
+  <label>圃場データ</label>
+  <div style="display:flex;gap:4px;margin-top:4px;">
+    <button id="btn-import" style="flex:1;padding:5px 8px;background:#4a9eff;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;">データ入替</button>
+    <button id="btn-delete" style="flex:1;padding:5px 8px;background:#e53935;border:none;color:#fff;border-radius:4px;cursor:pointer;font-size:11px;">データ削除</button>
+  </div>
+  <input type="file" id="file-import" accept=".csv" style="display:none;">
+</div>
+
+<div id="info" style="display:none;">
+  <span id="info-text">マウス: 回転 | Shift+マウス: 移動 | ホイール: ズーム</span>
+</div>
+
+<div id="legend" style="display:none;">
+  <div>標高 (m)</div>
+  <canvas id="legend-canvas" width="20" height="150"></canvas>
+  <div style="display:flex;justify-content:space-between;width:60px;">
+    <span id="legend-min"></span>
+    <span id="legend-max"></span>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/delaunator@5.0.0/delaunator.min.js"></script>
+<script>
+(function() {
+  let scene, camera, renderer, controls;
+  let rawData = [];
+  let terrainMesh, pointsMesh, waterMesh, flowLinesMesh;
+  let rainParticles = null, rainActive = false, rainIntensity = 30;
+  let surfaceFlowMesh = null, surfaceFlowData = null;
+  // Store grid data for simulation
+  let simGrid = null;
+
+  // File handling
+  const dropZone = document.getElementById('drop-zone');
+  const dropInner = document.getElementById('drop-inner');
+  const fileInput = document.getElementById('file-input');
+
+  dropInner.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); });
+  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropInner.style.borderColor = '#6fc'; });
+  dropZone.addEventListener('dragleave', () => { dropInner.style.borderColor = '#4a9eff'; });
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  // Auto-load from query param or default CSV
+  const urlParams = new URLSearchParams(window.location.search);
+  const autoFile = urlParams.get('file') || '27.csv';
+  if (autoFile) {
+    dropZone.classList.add('hidden');
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading-text').textContent = autoFile + ' を読み込み中...';
+    fetch(autoFile)
+      .then(res => { if (!res.ok) throw new Error('not found'); return res.text(); })
+      .then(text => parseCSV(text))
+      .catch(() => {
+        document.getElementById('loading').style.display = 'none';
+        dropZone.classList.remove('hidden');
+      });
+  }
+
+  function loadFile(file) {
+    dropZone.classList.add('hidden');
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading-text').textContent = 'CSVを解析中...';
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      parseCSV(e.target.result);
+    };
+    reader.readAsText(file);
+  }
+
+  function parseCSV(text) {
+    const lines = text.split('\n');
+    rawData = [];
+
+    // Find column indices
+    const header = lines[0].split(',');
+    const latIdx = header.findIndex(h => h.includes('VehicleSteerPointLatitude'));
+    const lonIdx = header.findIndex(h => h.includes('VehicleSteerPointLongitude'));
+    const altIdx = header.findIndex(h => h.includes('VehicleSteerPointAltitude'));
+    const hdgIdx = header.findIndex(h => h.includes('VehicleHeading'));
+
+    if (latIdx === -1 || lonIdx === -1 || altIdx === -1) {
+      alert('CSVに緯度・経度・標高のカラムが見つかりませんでした。');
+      return;
+    }
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',');
+      if (cols.length <= altIdx) continue;
+      const lat = parseFloat(cols[latIdx]);
+      const lon = parseFloat(cols[lonIdx]);
+      const alt = parseFloat(cols[altIdx]);
+      const hdg = hdgIdx >= 0 ? parseFloat(cols[hdgIdx]) : NaN;
+      if (isNaN(lat) || isNaN(lon) || isNaN(alt)) continue;
+      rawData.push({ lat, lon, alt, hdg: isNaN(hdg) ? 0 : hdg });
+    }
+
+    document.getElementById('loading-text').textContent =
+      `${rawData.length.toLocaleString()}点を読み込みました。3Dモデルを構築中...`;
+
+    setTimeout(() => buildScene(), 50);
+  }
+
+
+  async function buildScene() {
+    const samplingRate = 1; // 全ポイント使用
+    const exaggeration = parseInt(document.getElementById('exaggeration').value);
+
+    // Use all points (no downsampling)
+    const sampled = rawData;
+
+    // Compute data bounds
+    let minLat = Infinity, maxLat = -Infinity;
+    let minLon = Infinity, maxLon = -Infinity;
+    let minAlt = Infinity, maxAlt = -Infinity;
+
+    for (const p of sampled) {
+      minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat);
+      minLon = Math.min(minLon, p.lon); maxLon = Math.max(maxLon, p.lon);
+      minAlt = Math.min(minAlt, p.alt); maxAlt = Math.max(maxAlt, p.alt);
+    }
+
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLon = (minLon + maxLon) / 2;
+    const centerAlt = (minAlt + maxAlt) / 2;
+
+    // Convert to local meters (approximate)
+    const latScale = 111320;
+    const lonScale = 111320 * Math.cos(centerLat * Math.PI / 180);
+
+    const spanX = (maxLon - minLon) * lonScale;
+    const spanZ = (maxLat - minLat) * latScale;
+
+    // Grid-based interpolation (max resolution)
+    const gridRes = 300;
+    const gridW = gridRes;
+    const gridH = Math.max(3, Math.round(gridRes * spanZ / spanX));
+    const cellW = spanX / (gridW - 1);
+    const cellH = spanZ / (gridH - 1);
+
+    // Step 1: Bin points into grid cells with work-width expansion
+    // When work width > 0, each GPS point is expanded perpendicular to heading
+    const grid = new Float64Array(gridW * gridH).fill(0);
+    const gridWeights = new Float64Array(gridW * gridH).fill(0);
+    const gridCount = new Uint32Array(gridW * gridH).fill(0);
+
+    const workWidth = parseFloat(document.getElementById('work-width').value) || 0;
+    const halfWidth = workWidth / 2;
+    const DEG2RAD = Math.PI / 180;
+
+    for (const p of sampled) {
+      if (workWidth > 0) {
+        // Expand point perpendicular to heading direction
+        // heading is in degrees clockwise from north
+        const perpRad = (p.hdg + 90) * DEG2RAD; // perpendicular direction
+        const steps = Math.max(1, Math.ceil(workWidth / Math.min(cellW, cellH)));
+
+        for (let s = -steps; s <= steps; s++) {
+          const dist = (s / steps) * halfWidth; // meters from center
+          // Convert meter offset to lat/lon offset
+          const dLat = dist * Math.cos(perpRad) / latScale;
+          const dLon = dist * Math.sin(perpRad) / lonScale;
+
+          const lat2 = p.lat + dLat;
+          const lon2 = p.lon + dLon;
+
+          const gi = Math.round((lon2 - minLon) / (maxLon - minLon) * (gridW - 1));
+          const gj = Math.round((lat2 - minLat) / (maxLat - minLat) * (gridH - 1));
+          if (gi < 0 || gi >= gridW || gj < 0 || gj >= gridH) continue;
+
+          const idx = gj * gridW + gi;
+          // Weight by distance from center (closer = more weight)
+          const w = 1 - Math.abs(s / steps) * 0.3;
+          grid[idx] += p.alt * w;
+          gridWeights[idx] += w;
+          gridCount[idx]++;
+        }
+      } else {
+        // No work width - just bin the center point
+        const gi = Math.round((p.lon - minLon) / (maxLon - minLon) * (gridW - 1));
+        const gj = Math.round((p.lat - minLat) / (maxLat - minLat) * (gridH - 1));
+        if (gi < 0 || gi >= gridW || gj < 0 || gj >= gridH) continue;
+        const idx = gj * gridW + gi;
+        grid[idx] += p.alt;
+        gridWeights[idx] += 1;
+        gridCount[idx]++;
+      }
+    }
+
+    // Normalize binned cells
+    for (let i = 0; i < grid.length; i++) {
+      if (gridWeights[i] > 0) grid[i] /= gridWeights[i];
+    }
+
+    // Step 2: Iterative gap-filling from neighbors (fill remaining small gaps)
+    const maxFillIter = workWidth > 0 ? 3 : 8;
+    for (let iter = 0; iter < maxFillIter; iter++) {
+      let filled = 0;
+      const prevGrid = grid.slice();
+      const prevCount = gridCount.slice();
+      for (let j = 0; j < gridH; j++) {
+        for (let i = 0; i < gridW; i++) {
+          const idx = j * gridW + i;
+          if (prevCount[idx] > 0) continue;
+          let sum = 0, cnt = 0;
+          for (let dj = -1; dj <= 1; dj++) {
+            for (let di = -1; di <= 1; di++) {
+              if (di === 0 && dj === 0) continue;
+              const ni = i + di, nj = j + dj;
+              if (ni < 0 || ni >= gridW || nj < 0 || nj >= gridH) continue;
+              const nIdx = nj * gridW + ni;
+              if (prevCount[nIdx] > 0) {
+                sum += prevGrid[nIdx];
+                cnt++;
+              }
+            }
+          }
+          if (cnt >= 2) {
+            grid[idx] = sum / cnt;
+            gridCount[idx] = 1;
+            filled++;
+          }
+        }
+      }
+      if (filled === 0) break;
+    }
+
+    document.getElementById('loading-text').textContent = '3Dメッシュを構築中...';
+
+    // Adaptive Gaussian smoothing based on work width / cell size
+    // Kernel must cover at least one work-width to smooth tractor-pass steps
+    const cellSize = Math.min(cellW, cellH); // meters per cell
+    const effectiveWidth = workWidth > 0 ? workWidth : 3.0; // default 3m if not set
+    const widthInCells = effectiveWidth / cellSize;
+    // Kernel radius: cover ~1.5x work width, min 4 to handle narrow passes
+    const kernelR = Math.max(4, Math.min(8, Math.ceil(widthInCells * 0.75)));
+    // Sigma proportional to kernel size
+    const sigma = kernelR * 0.45;
+    // Passes: enough to blend across pass boundaries, min 6
+    const smoothPasses = Math.max(6, Math.min(10, Math.round(widthInCells * 1.5)));
+    console.log(`Smoothing: cellSize=${cellSize.toFixed(3)}m, workWidth=${effectiveWidth}m, widthInCells=${widthInCells.toFixed(1)}, kernelR=${kernelR}, sigma=${sigma.toFixed(2)}, passes=${smoothPasses}`);
+
+    const gWeights = [];
+    for (let dj = -kernelR; dj <= kernelR; dj++) {
+      for (let di = -kernelR; di <= kernelR; di++) {
+        gWeights.push({ di, dj, w: Math.exp(-(di*di + dj*dj) / (2*sigma*sigma)) });
+      }
+    }
+    for (let pass = 0; pass < smoothPasses; pass++) {
+      const src = grid.slice();
+      for (let j = kernelR; j < gridH - kernelR; j++) {
+        for (let i = kernelR; i < gridW - kernelR; i++) {
+          const idx = j * gridW + i;
+          if (gridCount[idx] === 0) continue;
+          let wSum = 0, wTotal = 0;
+          for (const g of gWeights) {
+            const nIdx = (j + g.dj) * gridW + (i + g.di);
+            if (gridCount[nIdx] > 0) {
+              wSum += src[nIdx] * g.w;
+              wTotal += g.w;
+            }
+          }
+          if (wTotal > 0) grid[idx] = wSum / wTotal;
+        }
+      }
+    }
+
+    // Build mesh from grid
+    const positions = [];
+    const validMask = [];
+
+    for (let j = 0; j < gridH; j++) {
+      for (let i = 0; i < gridW; i++) {
+        const idx = j * gridW + i;
+        const alt = grid[idx];
+        const valid = gridCount[idx] > 0;
+        validMask.push(valid);
+
+        const lon = minLon + i / (gridW - 1) * (maxLon - minLon);
+        const lat = minLat + j / (gridH - 1) * (maxLat - minLat);
+        const x = (lon - centerLon) * lonScale;
+        const z = -(lat - centerLat) * latScale;
+        const y = valid ? (alt - centerAlt) * exaggeration : 0;
+
+        positions.push({ x, y, z, alt: valid ? alt : centerAlt, lat, lon, valid });
+      }
+    }
+
+    // Build triangle indices from grid (skip cells where data is missing)
+    const filteredIndices = [];
+    for (let j = 0; j < gridH - 1; j++) {
+      for (let i = 0; i < gridW - 1; i++) {
+        const a = j * gridW + i;
+        const b = a + 1;
+        const c = (j + 1) * gridW + i;
+        const d = c + 1;
+        if (validMask[a] && validMask[b] && validMask[c]) {
+          filteredIndices.push(a, b, c);
+        }
+        if (validMask[b] && validMask[d] && validMask[c]) {
+          filteredIndices.push(b, d, c);
+        }
+      }
+    }
+
+    // Setup Three.js
+    if (!renderer) {
+      initThreeJS();
+    }
+
+    // Clear old meshes
+    if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); }
+    if (pointsMesh) { scene.remove(pointsMesh); pointsMesh.geometry.dispose(); }
+
+    // Load GSI tiles first to get tile bounds for UV calculation
+    const mode = document.getElementById('render-mode').value;
+    let tileTexture = null;
+    if (mode === 'texture') {
+      tileTexture = loadGSITiles(minLat, maxLat, minLon, maxLon, 'std');
+    } else if (mode === 'photo') {
+      tileTexture = loadGSITiles(minLat, maxLat, minLon, maxLon, 'seamlessphoto');
+    }
+
+    // Build geometry
+    const geometry = new THREE.BufferGeometry();
+    const vertexPositions = new Float32Array(positions.length * 3);
+    const colors = new Float32Array(positions.length * 3);
+    const uvs = new Float32Array(positions.length * 2);
+
+    // UV bounds: use tile bounds if available, otherwise data bounds
+    const uvBounds = tileTexture?.tileBounds || {
+      lonMin: minLon, lonMax: maxLon, latMin: minLat, latMax: maxLat
+    };
+
+    for (let i = 0; i < positions.length; i++) {
+      vertexPositions[i*3] = positions[i].x;
+      vertexPositions[i*3+1] = positions[i].y;
+      vertexPositions[i*3+2] = positions[i].z;
+
+      const t = (positions[i].alt - minAlt) / (maxAlt - minAlt || 1);
+      const color = altitudeColor(t);
+      colors[i*3] = color.r;
+      colors[i*3+1] = color.g;
+      colors[i*3+2] = color.b;
+
+      // UV mapped to tile coordinate system (using Mercator projection for V)
+      // U: 0=west, 1=east
+      uvs[i*2] = (positions[i].lon - uvBounds.lonMin) / (uvBounds.lonMax - uvBounds.lonMin || 1);
+      // V: Three.js UV has V=0 at bottom, V=1 at top
+      // Canvas has y=0 at top (north), y=height at bottom (south)
+      // So V must be flipped: north(latMax)=1(top), south(latMin)=0(bottom)
+      const mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+      const vMerc = mercY(positions[i].lat);
+      const vNorth = mercY(uvBounds.latMax);
+      const vSouth = mercY(uvBounds.latMin);
+      // Canvas position: 0 at north, 1 at south → flip for Three.js
+      const canvasV = (vMerc - vNorth) / (vSouth - vNorth);
+      uvs[i*2+1] = 1 - canvasV; // flip: V=1 at north (top of canvas), V=0 at south
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(vertexPositions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.setIndex(Array.from(filteredIndices));
+    geometry.computeVertexNormals();
+
+    let material;
+    if (mode === 'texture' || mode === 'photo') {
+      material = new THREE.MeshPhongMaterial({
+        map: tileTexture,
+        side: THREE.DoubleSide,
+        flatShading: false,
+      });
+    } else if (mode === 'elevation') {
+      material = new THREE.MeshPhongMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        flatShading: false,
+      });
+    } else {
+      material = new THREE.MeshPhongMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        wireframe: true,
+      });
+    }
+
+    terrainMesh = new THREE.Mesh(geometry, material);
+    scene.add(terrainMesh);
+
+    // Point cloud from original sampled data (not grid)
+    const ptPositions = new Float32Array(sampled.length * 3);
+    const ptColors = new Float32Array(sampled.length * 3);
+    for (let i = 0; i < sampled.length; i++) {
+      const p = sampled[i];
+      ptPositions[i*3] = (p.lon - centerLon) * lonScale;
+      ptPositions[i*3+1] = (p.alt - centerAlt) * exaggeration;
+      ptPositions[i*3+2] = -(p.lat - centerLat) * latScale;
+      const t = (p.alt - minAlt) / (maxAlt - minAlt || 1);
+      const c = altitudeColor(t);
+      ptColors[i*3] = c.r; ptColors[i*3+1] = c.g; ptColors[i*3+2] = c.b;
+    }
+    const pointsGeom = new THREE.BufferGeometry();
+    pointsGeom.setAttribute('position', new THREE.BufferAttribute(ptPositions, 3));
+    pointsGeom.setAttribute('color', new THREE.BufferAttribute(ptColors, 3));
+    const pointsMat = new THREE.PointsMaterial({
+      size: 1.5,
+      vertexColors: true,
+      sizeAttenuation: true,
+      opacity: 0.6,
+      transparent: true,
+    });
+    pointsMesh = new THREE.Points(pointsGeom, pointsMat);
+    pointsMesh.visible = document.getElementById('show-points').checked;
+    scene.add(pointsMesh);
+
+    // Position camera
+    const size = Math.max(spanX, spanZ);
+    camera.position.set(size * 0.6, size * 0.4, size * 0.6);
+    camera.lookAt(0, 0, 0);
+    controls.target.set(0, 0, 0);
+    controls.update();
+
+    // Update legend
+    updateLegend(minAlt, maxAlt);
+
+    // Show UI
+    document.getElementById('controls').style.display = 'block';
+    document.getElementById('info').style.display = 'block';
+    document.getElementById('legend').style.display = 'block';
+    document.getElementById('loading').style.display = 'none';
+
+    const validCells = validMask.filter(v => v).length;
+    const altDiff = maxAlt - minAlt;
+    const fieldSpan = Math.max(spanX, spanZ);
+    const realSlopeDeg = Math.atan2(altDiff, fieldSpan) * 180 / Math.PI;
+    const displaySlopeDeg = Math.atan2(altDiff * exaggeration, fieldSpan) * 180 / Math.PI;
+    const slopePercent = (altDiff / fieldSpan * 100);
+
+    document.getElementById('slope-info').textContent =
+      `実傾斜: ${realSlopeDeg.toFixed(1)}° (${slopePercent.toFixed(1)}%) → 表示: ${displaySlopeDeg.toFixed(1)}°`;
+
+    document.getElementById('info-text').textContent =
+      `元データ: ${rawData.length.toLocaleString()}点 | サンプル: ${sampled.length.toLocaleString()}点 | グリッド: ${gridW}x${gridH} (有効${validCells}) | 標高差: ${altDiff.toFixed(1)}m (${minAlt.toFixed(1)}〜${maxAlt.toFixed(1)}m) | 距離: ${fieldSpan.toFixed(0)}m`;
+
+    // Store grid data for rain simulation
+    simGrid = {
+      grid: grid.slice(), gridCount: gridCount.slice(), validMask: validMask.slice(),
+      gridW, gridH, cellW, cellH, minLat, maxLat, minLon, maxLon,
+      centerLat, centerLon, centerAlt, latScale, lonScale,
+      minAlt, maxAlt, exaggeration, spanX, spanZ
+    };
+
+    // Clear previous water, rain and surface flow
+    if (waterMesh) { scene.remove(waterMesh); waterMesh.geometry.dispose(); waterMesh = null; }
+    if (flowLinesMesh) { scene.remove(flowLinesMesh); flowLinesMesh.geometry.dispose(); flowLinesMesh = null; }
+    removeRain();
+    removeSurfaceFlow();
+    document.getElementById('btn-rain-clear').style.display = 'none';
+  }
+
+  // ===== Rain Simulation =====
+  function runRainSimulation() {
+    if (!simGrid) return;
+    const { grid, gridCount, validMask, gridW, gridH, cellW, cellH,
+            centerLat, centerLon, centerAlt, latScale, lonScale,
+            minLat, maxLat, minLon, maxLon, minAlt, maxAlt, exaggeration,
+            spanX, spanZ } = simGrid;
+    const rainMM = parseFloat(document.getElementById('rain-amount').value) || 30;
+
+    // Convert mm to meters of water
+    const rainM = rainMM / 1000;
+
+    // D8 flow direction: each cell flows to the steepest downhill neighbor
+    // Directions: 0=E, 1=SE, 2=S, 3=SW, 4=W, 5=NW, 6=N, 7=NE, -1=sink
+    const di8 = [1, 1, 0, -1, -1, -1, 0, 1];
+    const dj8 = [0, -1, -1, -1, 0, 1, 1, 1];
+    const dist8 = [cellW, Math.sqrt(cellW*cellW+cellH*cellH), cellH,
+                   Math.sqrt(cellW*cellW+cellH*cellH), cellW,
+                   Math.sqrt(cellW*cellW+cellH*cellH), cellH,
+                   Math.sqrt(cellW*cellW+cellH*cellH)];
+
+    const flowDir = new Int8Array(gridW * gridH).fill(-1);
+
+    // Step 1: Calculate flow directions
+    for (let j = 0; j < gridH; j++) {
+      for (let i = 0; i < gridW; i++) {
+        const idx = j * gridW + i;
+        if (gridCount[idx] === 0) continue;
+        const elev = grid[idx];
+
+        let maxSlope = 0;
+        let bestDir = -1;
+        for (let d = 0; d < 8; d++) {
+          const ni = i + di8[d], nj = j + dj8[d];
+          if (ni < 0 || ni >= gridW || nj < 0 || nj >= gridH) continue;
+          const nIdx = nj * gridW + ni;
+          if (gridCount[nIdx] === 0) continue;
+          const slope = (elev - grid[nIdx]) / dist8[d];
+          if (slope > maxSlope) {
+            maxSlope = slope;
+            bestDir = d;
+          }
+        }
+        flowDir[idx] = bestDir;
+      }
+    }
+
+    // Step 2: Flow accumulation (count upstream cells using topological sort)
+    const flowAccum = new Float64Array(gridW * gridH).fill(0);
+    // Only rain on cells within the field data bounds
+    for (let idx = 0; idx < gridW * gridH; idx++) {
+      if (gridCount[idx] > 0) flowAccum[idx] = rainM;
+    }
+
+    // Count incoming flows for topological sort
+    const inCount = new Uint32Array(gridW * gridH).fill(0);
+    for (let j = 0; j < gridH; j++) {
+      for (let i = 0; i < gridW; i++) {
+        const idx = j * gridW + i;
+        if (flowDir[idx] >= 0) {
+          const ni = i + di8[flowDir[idx]], nj = j + dj8[flowDir[idx]];
+          const nIdx = nj * gridW + ni;
+          inCount[nIdx]++;
+        }
+      }
+    }
+
+    // Process cells from ridges (no incoming) to valleys
+    const queue = [];
+    for (let i = 0; i < inCount.length; i++) {
+      if (gridCount[i] > 0 && inCount[i] === 0) queue.push(i);
+    }
+
+    let qi = 0;
+    while (qi < queue.length) {
+      const idx = queue[qi++];
+      const i = idx % gridW, j = Math.floor(idx / gridW);
+      const d = flowDir[idx];
+      if (d >= 0) {
+        const ni = i + di8[d], nj = j + dj8[d];
+        const nIdx = nj * gridW + ni;
+        flowAccum[nIdx] += flowAccum[idx];
+        inCount[nIdx]--;
+        if (inCount[nIdx] === 0) queue.push(nIdx);
+      }
+    }
+
+    // Step 3: Find sinks (local minima) and calculate water depth
+    const waterDepth = new Float64Array(gridW * gridH).fill(0);
+    for (let j = 0; j < gridH; j++) {
+      for (let i = 0; i < gridW; i++) {
+        const idx = j * gridW + i;
+        if (gridCount[idx] === 0) continue;
+        if (flowDir[idx] === -1) {
+          // This is a sink - water accumulates here
+          // Spread water to surrounding area based on accumulation
+          waterDepth[idx] = flowAccum[idx] * cellW * cellH; // volume in m³
+        }
+      }
+    }
+
+    // Fill depressions: spread water from sinks to neighbors until level
+    for (let iter = 0; iter < 50; iter++) {
+      let changed = false;
+      for (let j = 0; j < gridH; j++) {
+        for (let i = 0; i < gridW; i++) {
+          const idx = j * gridW + i;
+          if (waterDepth[idx] <= 0) continue;
+
+          const waterLevel = grid[idx] + waterDepth[idx];
+          // Try to spread to neighbors
+          for (let d = 0; d < 8; d++) {
+            const ni = i + di8[d], nj = j + dj8[d];
+            if (ni < 0 || ni >= gridW || nj < 0 || nj >= gridH) continue;
+            const nIdx = nj * gridW + ni;
+            if (gridCount[nIdx] === 0) continue;
+
+            const neighborLevel = grid[nIdx] + waterDepth[nIdx];
+            if (waterLevel > neighborLevel && grid[nIdx] < waterLevel) {
+              const transfer = Math.min(waterDepth[idx] * 0.1,
+                (waterLevel - neighborLevel) * 0.5);
+              if (transfer > 0.0001) {
+                waterDepth[nIdx] += transfer;
+                waterDepth[idx] -= transfer;
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+      if (!changed) break;
+    }
+
+    // Step 4: Normalize flow accumulation for visualization
+    let maxAccum = 0;
+    for (let i = 0; i < flowAccum.length; i++) {
+      if (gridCount[i] > 0) maxAccum = Math.max(maxAccum, flowAccum[i]);
+    }
+
+    // Step 5: Build water visualization mesh
+    // Remove previous water
+    if (waterMesh) { scene.remove(waterMesh); waterMesh.geometry.dispose(); }
+    if (flowLinesMesh) { scene.remove(flowLinesMesh); flowLinesMesh.geometry.dispose(); }
+
+    // Water surface mesh (only where water accumulates significantly)
+    const waterPositions = [];
+    const waterColors = [];
+    const waterIndices = [];
+    const waterThreshold = rainM * 2; // Show water where accumulation > 2x rain
+
+    // Build water overlay on grid
+    const waterGridPositions = new Float32Array(gridW * gridH * 3);
+    const waterGridColors = new Float32Array(gridW * gridH * 3);
+    const waterValid = new Uint8Array(gridW * gridH);
+
+    for (let j = 0; j < gridH; j++) {
+      for (let i = 0; i < gridW; i++) {
+        const idx = j * gridW + i;
+        const lon = minLon + i / (gridW - 1) * (maxLon - minLon);
+        const lat = minLat + j / (gridH - 1) * (maxLat - minLat);
+        const x = (lon - centerLon) * lonScale;
+        const z = -(lat - centerLat) * latScale;
+
+        // Flow intensity: absolute scale based on actual water volume (m³ passing through cell)
+        const flowVolume = flowAccum[idx] * cellW * cellH; // m³
+        const flowT = gridCount[idx] > 0 ?
+          Math.min(1, Math.log(1 + flowVolume * 50) / 6) : 0;
+
+        // Water depth at sink
+        const depthM = waterDepth[idx];
+        const depthAsHeight = depthM / (cellW * cellH);
+        const depthT = Math.min(1, depthAsHeight * 100);
+
+        const show = flowT > 0.1 || depthT > 0.005;
+
+        if (show && gridCount[idx] > 0) {
+          const alt = grid[idx] + waterDepth[idx];
+          const y = (alt - centerAlt) * exaggeration + 0.15; // Slightly above terrain
+
+          waterGridPositions[idx*3] = x;
+          waterGridPositions[idx*3+1] = y;
+          waterGridPositions[idx*3+2] = z;
+
+          // Color: light blue for flow, deeper blue for pools
+          const poolBlend = Math.min(1, depthT * 3);
+          const r = 0.1 * (1 - poolBlend) + 0.0 * poolBlend;
+          const g = 0.4 + 0.3 * flowT * (1 - poolBlend) + 0.15 * poolBlend;
+          const b = 0.6 + 0.4 * flowT * (1 - poolBlend) + 0.4 * poolBlend;
+          waterGridColors[idx*3] = r;
+          waterGridColors[idx*3+1] = g;
+          waterGridColors[idx*3+2] = b;
+          waterValid[idx] = 1;
+        }
+      }
+    }
+
+    // Build water triangles
+    const wIndices = [];
+    for (let j = 0; j < gridH - 1; j++) {
+      for (let i = 0; i < gridW - 1; i++) {
+        const a = j * gridW + i, b = a + 1;
+        const c = (j+1) * gridW + i, d = c + 1;
+        if (waterValid[a] && waterValid[b] && waterValid[c]) wIndices.push(a, b, c);
+        if (waterValid[b] && waterValid[d] && waterValid[c]) wIndices.push(b, d, c);
+      }
+    }
+
+    if (wIndices.length > 0) {
+      const wGeom = new THREE.BufferGeometry();
+      wGeom.setAttribute('position', new THREE.BufferAttribute(waterGridPositions, 3));
+      wGeom.setAttribute('color', new THREE.BufferAttribute(waterGridColors, 3));
+      wGeom.setIndex(wIndices);
+      wGeom.computeVertexNormals();
+
+      const wMat = new THREE.MeshPhongMaterial({
+        vertexColors: true,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.6,
+        shininess: 100,
+        specular: new THREE.Color(0x444444),
+      });
+      waterMesh = new THREE.Mesh(wGeom, wMat);
+      scene.add(waterMesh);
+    }
+
+    // Step 6: Build flow lines (major flow paths)
+    const flowLinePositions = [];
+    const flowLineColors = [];
+    // Flow line threshold: show lines where water volume > 0.5m³ passing through
+    const flowThreshold = 0.5 / (cellW * cellH); // Convert m³ threshold to accumulation units
+
+    for (let j = 1; j < gridH - 1; j++) {
+      for (let i = 1; i < gridW - 1; i++) {
+        const idx = j * gridW + i;
+        if (gridCount[idx] === 0 || flowAccum[idx] < flowThreshold) continue;
+        const d = flowDir[idx];
+        if (d < 0) continue;
+
+        const lon1 = minLon + i / (gridW-1) * (maxLon - minLon);
+        const lat1 = minLat + j / (gridH-1) * (maxLat - minLat);
+        const x1 = (lon1 - centerLon) * lonScale;
+        const z1 = -(lat1 - centerLat) * latScale;
+        const y1 = (grid[idx] - centerAlt) * exaggeration + 0.3;
+
+        const ni = i + di8[d], nj = j + dj8[d];
+        const nIdx = nj * gridW + ni;
+        const lon2 = minLon + ni / (gridW-1) * (maxLon - minLon);
+        const lat2 = minLat + nj / (gridH-1) * (maxLat - minLat);
+        const x2 = (lon2 - centerLon) * lonScale;
+        const z2 = -(lat2 - centerLat) * latScale;
+        const y2 = (grid[nIdx] - centerAlt) * exaggeration + 0.3;
+
+        flowLinePositions.push(x1, y1, z1, x2, y2, z2);
+
+        const intensity = Math.min(1, flowAccum[idx] / maxAccum * 5);
+        flowLineColors.push(0, 0.3, 0.8 + 0.2*intensity, 0, 0.3, 0.8 + 0.2*intensity);
+      }
+    }
+
+    if (flowLinePositions.length > 0) {
+      const flGeom = new THREE.BufferGeometry();
+      flGeom.setAttribute('position', new THREE.Float32BufferAttribute(flowLinePositions, 3));
+      flGeom.setAttribute('color', new THREE.Float32BufferAttribute(flowLineColors, 3));
+      const flMat = new THREE.LineBasicMaterial({
+        vertexColors: true, transparent: true, opacity: 0.7, linewidth: 1
+      });
+      flowLinesMesh = new THREE.LineSegments(flGeom, flMat);
+      scene.add(flowLinesMesh);
+    }
+
+    // Start rain animation
+    const maxY = (maxAlt - centerAlt) * exaggeration;
+    createRain(rainMM, spanX, spanZ, maxY, 0, 0);
+
+    // Start surface flow animation
+    createSurfaceFlow(flowDir, flowAccum, gridCount, gridW, gridH,
+                      grid, minLon, maxLon, minLat, maxLat,
+                      centerLon, centerLat, centerAlt, lonScale, latScale,
+                      exaggeration, rainMM);
+
+    // Show clear button
+    document.getElementById('btn-rain-clear').style.display = 'block';
+    document.getElementById('loading').style.display = 'none';
+
+    // Update info
+    const sinkCount = Array.from(flowDir).filter((d, i) => d === -1 && gridCount[i] > 0).length;
+    document.getElementById('info-text').textContent =
+      `降水量: ${rainMM}mm | 水溜まり箇所: ${sinkCount} | 最大流量集中: ${maxAccum.toFixed(2)}m | グリッド: ${gridW}x${gridH}`;
+  }
+
+  function altitudeColor(t) {
+    // Blue -> Cyan -> Green -> Yellow -> Red
+    const stops = [
+      { t: 0.0, r: 0.0, g: 0.0, b: 1.0 },
+      { t: 0.25, r: 0.0, g: 0.8, b: 1.0 },
+      { t: 0.5, r: 0.0, g: 1.0, b: 0.2 },
+      { t: 0.75, r: 1.0, g: 1.0, b: 0.0 },
+      { t: 1.0, r: 1.0, g: 0.0, b: 0.0 },
+    ];
+    for (let i = 0; i < stops.length - 1; i++) {
+      if (t >= stops[i].t && t <= stops[i+1].t) {
+        const f = (t - stops[i].t) / (stops[i+1].t - stops[i].t);
+        return {
+          r: stops[i].r + (stops[i+1].r - stops[i].r) * f,
+          g: stops[i].g + (stops[i+1].g - stops[i].g) * f,
+          b: stops[i].b + (stops[i+1].b - stops[i].b) * f,
+        };
+      }
+    }
+    return { r: 1, g: 0, b: 0 };
+  }
+
+  function loadGSITiles(minLat, maxLat, minLon, maxLon, tileType) {
+    // tileType: 'std' = 地図, 'seamlessphoto' = 衛星写真
+    const zoom = 17;
+    const ext = tileType === 'seamlessphoto' ? 'jpg' : 'png';
+
+    // Convert lat/lon to tile coords
+    function latLonToTile(lat, lon, z) {
+      const x = Math.floor((lon + 180) / 360 * Math.pow(2, z));
+      const y = Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) +
+        1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+      return { x, y };
+    }
+
+    const tileMin = latLonToTile(maxLat, minLon, zoom); // Note: maxLat gives smaller y
+    const tileMax = latLonToTile(minLat, maxLon, zoom);
+
+    const tilesX = tileMax.x - tileMin.x + 1;
+    const tilesY = tileMax.y - tileMin.y + 1;
+
+    // Limit tiles to avoid too many requests
+    const maxTiles = 12;
+    let actualZoom = zoom;
+    let tMin = tileMin, tMax = tileMax;
+
+    if (tilesX * tilesY > maxTiles * maxTiles) {
+      // Reduce zoom
+      actualZoom = zoom - Math.ceil(Math.log2(Math.max(tilesX, tilesY) / maxTiles));
+      if (actualZoom < 10) actualZoom = 10;
+      tMin = latLonToTile(maxLat, minLon, actualZoom);
+      tMax = latLonToTile(minLat, maxLon, actualZoom);
+    }
+
+    const nx = tMax.x - tMin.x + 1;
+    const ny = tMax.y - tMin.y + 1;
+    const tileSize = 256;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = nx * tileSize;
+    canvas.height = ny * tileSize;
+    const ctx = canvas.getContext('2d');
+
+    // Fill with gray initially
+    ctx.fillStyle = '#ccc';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+
+    // Load tiles
+    let loadedCount = 0;
+    const totalTiles = nx * ny;
+
+    for (let ty = 0; ty < ny; ty++) {
+      for (let tx = 0; tx < nx; tx++) {
+        const tileX = tMin.x + tx;
+        const tileY = tMin.y + ty;
+        const url = `https://cyberjapandata.gsi.go.jp/xyz/${tileType}/${actualZoom}/${tileX}/${tileY}.${ext}`;
+
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function() {
+          ctx.drawImage(img, tx * tileSize, ty * tileSize, tileSize, tileSize);
+          loadedCount++;
+          texture.needsUpdate = true;
+        };
+        img.onerror = function() {
+          loadedCount++;
+        };
+        img.src = url;
+      }
+    }
+
+    // Adjust UV mapping to match tile coverage
+    // The tiles cover a specific lat/lon range that may be wider than data range
+    // We need to adjust UVs to map data range within tile range
+    function tileBoundsLatLon(tileX, tileY, z) {
+      const n = Math.PI - 2 * Math.PI * tileY / Math.pow(2, z);
+      const lat = 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+      const lon = tileX / Math.pow(2, z) * 360 - 180;
+      return { lat, lon };
+    }
+
+    const topLeft = tileBoundsLatLon(tMin.x, tMin.y, actualZoom);
+    const bottomRight = tileBoundsLatLon(tMax.x + 1, tMax.y + 1, actualZoom);
+
+    // Return texture and tile bounds for UV calculation
+    texture.tileBounds = {
+      lonMin: topLeft.lon,
+      lonMax: bottomRight.lon,
+      latMin: bottomRight.lat,
+      latMax: topLeft.lat,
+    };
+
+    return texture;
+  }
+
+  function updateLegend(minAlt, maxAlt) {
+    const canvas = document.getElementById('legend-canvas');
+    const ctx = canvas.getContext('2d');
+    for (let y = 0; y < canvas.height; y++) {
+      const t = 1 - y / canvas.height;
+      const c = altitudeColor(t);
+      ctx.fillStyle = `rgb(${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)})`;
+      ctx.fillRect(0, y, canvas.width, 1);
+    }
+    document.getElementById('legend-max').textContent = maxAlt.toFixed(1);
+    document.getElementById('legend-min').textContent = minAlt.toFixed(1);
+  }
+
+  function initThreeJS() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100000);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.getElementById('container').appendChild(renderer.domElement);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.1;
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(100, 200, 100);
+    scene.add(dirLight);
+
+    const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+    dirLight2.position.set(-100, 100, -100);
+    scene.add(dirLight2);
+
+    // Grid helper (subtle)
+    const grid = new THREE.GridHelper(1000, 50, 0x333355, 0x222244);
+    grid.position.y = -50;
+    scene.add(grid);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+  }
+
+  function createRain(rainMM, spanX, spanZ, maxY, offsetX, offsetZ) {
+    removeRain();
+    offsetX = offsetX || 0;
+    offsetZ = offsetZ || 0;
+    // Particle count scales with rainfall: 5mm→2000, 30mm→8000, 200mm→20000
+    const count = Math.min(25000, Math.max(2000, Math.round(rainMM * 300)));
+    const halfX = spanX / 2 * 1.2;
+    const halfZ = spanZ / 2 * 1.2;
+    const topY = maxY + spanX * 0.3;
+    const bottomY = -maxY - 5;
+    // Rain drop speed scales with intensity: light rain slower, heavy rain faster
+    const speed = 1.5 + rainMM * 0.03;
+    // Rain streak length scales with intensity
+    const streakLen = 1.0 + rainMM * 0.02;
+
+    const positions = new Float32Array(count * 6); // 2 vertices per line (top, bottom of streak)
+    for (let i = 0; i < count; i++) {
+      const x = offsetX + (Math.random() - 0.5) * 2 * halfX;
+      const y = bottomY + Math.random() * (topY - bottomY);
+      const z = offsetZ + (Math.random() - 0.5) * 2 * halfZ;
+      positions[i*6] = x;
+      positions[i*6+1] = y;
+      positions[i*6+2] = z;
+      positions[i*6+3] = x;
+      positions[i*6+4] = y - streakLen;
+      positions[i*6+5] = z;
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    // Opacity scales with intensity
+    const opacity = Math.min(0.5, 0.15 + rainMM * 0.002);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0x88bbff,
+      transparent: true,
+      opacity: opacity,
+    });
+
+    rainParticles = new THREE.LineSegments(geom, mat);
+    rainParticles._speed = speed;
+    rainParticles._topY = topY;
+    rainParticles._bottomY = bottomY;
+    rainParticles._halfX = halfX;
+    rainParticles._halfZ = halfZ;
+    rainParticles._offsetX = offsetX;
+    rainParticles._offsetZ = offsetZ;
+    rainParticles._streakLen = streakLen;
+    rainParticles._count = count;
+    scene.add(rainParticles);
+    rainActive = true;
+  }
+
+  function createSurfaceFlow(flowDir, flowAccum, gridCount, gridW, gridH,
+                              grid, minLon, maxLon, minLat, maxLat,
+                              centerLon, centerLat, centerAlt, lonScale, latScale,
+                              exaggeration, rainMM) {
+    removeSurfaceFlow();
+
+    const di8 = [1, 1, 0, -1, -1, -1, 0, 1];
+    const dj8 = [0, -1, -1, -1, 0, 1, 1, 1];
+
+    // Number of flow particles scales with rainfall
+    const particleCount = Math.min(5000, Math.max(1000, Math.round(rainMM * 80)));
+    // Trail length per particle (number of segments)
+    const trailLen = 6;
+    const vertsPerParticle = trailLen + 1;
+
+    // Build spawn probability weighted by flow accumulation
+    const spawnWeights = [];
+    let totalWeight = 0;
+    for (let idx = 0; idx < gridW * gridH; idx++) {
+      if (gridCount[idx] > 0 && flowDir[idx] >= 0 && flowAccum[idx] > 0.01) {
+        const w = Math.sqrt(flowAccum[idx]);
+        spawnWeights.push({ idx, w });
+        totalWeight += w;
+      }
+    }
+    if (spawnWeights.length === 0 || totalWeight === 0) return;
+
+    // Precompute cumulative weights for weighted random sampling
+    const cumWeights = new Float64Array(spawnWeights.length);
+    cumWeights[0] = spawnWeights[0].w / totalWeight;
+    for (let i = 1; i < spawnWeights.length; i++) {
+      cumWeights[i] = cumWeights[i-1] + spawnWeights[i].w / totalWeight;
+    }
+
+    function pickSpawnCell() {
+      const r = Math.random();
+      let lo = 0, hi = cumWeights.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cumWeights[mid] < r) lo = mid + 1; else hi = mid;
+      }
+      return spawnWeights[lo].idx;
+    }
+
+    function isInFieldBounds(idx) {
+      const i = idx % gridW, j = Math.floor(idx / gridW);
+      return i >= 0 && i < gridW && j >= 0 && j < gridH;
+    }
+
+    function cellToPos(idx) {
+      const i = idx % gridW, j = Math.floor(idx / gridW);
+      const lon = minLon + i / (gridW - 1) * (maxLon - minLon);
+      const lat = minLat + j / (gridH - 1) * (maxLat - minLat);
+      return {
+        x: (lon - centerLon) * lonScale,
+        y: (grid[idx] - centerAlt) * exaggeration + 0.3,
+        z: -(lat - centerLat) * latScale
+      };
+    }
+
+    // Initialize particles: each has a trail of grid cell indices
+    const particles = [];
+    for (let p = 0; p < particleCount; p++) {
+      const trail = [];
+      let cell = pickSpawnCell();
+      // Walk a random number of steps so particles are distributed along paths
+      const preSteps = Math.floor(Math.random() * trailLen * 3);
+      for (let s = 0; s < preSteps; s++) {
+        const d = flowDir[cell];
+        if (d < 0) break;
+        const ci = cell % gridW, cj = Math.floor(cell / gridW);
+        const ni = ci + di8[d], nj = cj + dj8[d];
+        if (ni < 0 || ni >= gridW || nj < 0 || nj >= gridH) break;
+        const nIdx = nj * gridW + ni;
+        if (gridCount[nIdx] === 0 || !isInFieldBounds(nIdx)) break;
+        cell = nIdx;
+      }
+      // Build initial trail from current position
+      trail.push(cell);
+      let cur = cell;
+      for (let t = 0; t < trailLen; t++) {
+        const d = flowDir[cur];
+        if (d < 0) { trail.push(cur); continue; }
+        const ci = cur % gridW, cj = Math.floor(cur / gridW);
+        const ni = ci + di8[d], nj = cj + dj8[d];
+        if (ni < 0 || ni >= gridW || nj < 0 || nj >= gridH) { trail.push(cur); continue; }
+        const nIdx = nj * gridW + ni;
+        if (gridCount[nIdx] === 0 || !isInFieldBounds(nIdx)) { trail.push(cur); continue; }
+        cur = nIdx;
+        trail.push(cur);
+      }
+      particles.push({ trail, age: Math.floor(Math.random() * 8) });
+    }
+
+    // Create geometry: each particle is a line strip rendered as line segments
+    const totalVerts = particleCount * trailLen * 2; // 2 verts per segment
+    const positions = new Float32Array(totalVerts * 3);
+    const colors = new Float32Array(totalVerts * 3);
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    const mat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.8,
+    });
+
+    surfaceFlowMesh = new THREE.LineSegments(geom, mat);
+    scene.add(surfaceFlowMesh);
+
+    surfaceFlowData = {
+      particles, flowDir, flowAccum, gridCount, gridW, gridH,
+      di8, dj8, trailLen, particleCount, cellToPos, pickSpawnCell, isInFieldBounds,
+      frameCount: 0, stepInterval: Math.max(2, Math.floor(8 - rainMM * 0.03)),
+    };
+
+    updateSurfaceFlowGeometry();
+  }
+
+  function updateSurfaceFlowGeometry() {
+    if (!surfaceFlowMesh || !surfaceFlowData) return;
+    const { particles, trailLen, particleCount, cellToPos, flowAccum } = surfaceFlowData;
+    const pos = surfaceFlowMesh.geometry.attributes.position.array;
+    const col = surfaceFlowMesh.geometry.attributes.color.array;
+
+    for (let p = 0; p < particleCount; p++) {
+      const trail = particles[p].trail;
+      const baseIdx = p * trailLen * 2 * 3;
+      for (let t = 0; t < trailLen; t++) {
+        const t0 = Math.min(t, trail.length - 1);
+        const t1 = Math.min(t + 1, trail.length - 1);
+        const p0 = cellToPos(trail[t0]);
+        const p1 = cellToPos(trail[t1]);
+        const vi = baseIdx + t * 6;
+
+        pos[vi] = p0.x; pos[vi+1] = p0.y; pos[vi+2] = p0.z;
+        pos[vi+3] = p1.x; pos[vi+4] = p1.y; pos[vi+5] = p1.z;
+
+        // Color: fade from bright cyan (head) to transparent (tail)
+        const fade = 1 - t / trailLen;
+        const intensity = Math.min(1, Math.sqrt(flowAccum[trail[t0]]) * 0.5);
+        col[vi] = 0.2 * fade; col[vi+1] = 0.7 * fade * intensity; col[vi+2] = 1.0 * fade;
+        col[vi+3] = 0.1 * fade; col[vi+4] = 0.5 * fade * intensity; col[vi+5] = 0.9 * fade;
+      }
+    }
+
+    surfaceFlowMesh.geometry.attributes.position.needsUpdate = true;
+    surfaceFlowMesh.geometry.attributes.color.needsUpdate = true;
+  }
+
+  function stepSurfaceFlow() {
+    if (!surfaceFlowData) return;
+    surfaceFlowData.frameCount++;
+    if (surfaceFlowData.frameCount % surfaceFlowData.stepInterval !== 0) return;
+
+    const { particles, flowDir, gridCount, gridW, gridH,
+            di8, dj8, trailLen, particleCount, pickSpawnCell, isInFieldBounds } = surfaceFlowData;
+
+    for (let p = 0; p < particleCount; p++) {
+      const particle = particles[p];
+      const head = particle.trail[0];
+      const d = flowDir[head];
+
+      // Advance: shift trail forward, add new head position
+      if (d >= 0) {
+        const ci = head % gridW, cj = Math.floor(head / gridW);
+        const ni = ci + di8[d], nj = cj + dj8[d];
+        if (ni >= 0 && ni < gridW && nj >= 0 && nj < gridH) {
+          const nIdx = nj * gridW + ni;
+          if (gridCount[nIdx] > 0 && isInFieldBounds(nIdx)) {
+            // Shift trail: remove last, insert new head
+            particle.trail.pop();
+            particle.trail.unshift(nIdx);
+            continue;
+          }
+        }
+      }
+
+      // Reached sink or edge: respawn after a delay
+      particle.age++;
+      if (particle.age > 5) {
+        particle.age = 0;
+        const newCell = pickSpawnCell();
+        particle.trail = [];
+        let cur = newCell;
+        particle.trail.push(cur);
+        for (let t = 0; t < trailLen; t++) {
+          const dd = flowDir[cur];
+          if (dd < 0) { particle.trail.push(cur); continue; }
+          const ci2 = cur % gridW, cj2 = Math.floor(cur / gridW);
+          const ni2 = ci2 + di8[dd], nj2 = cj2 + dj8[dd];
+          if (ni2 < 0 || ni2 >= gridW || nj2 < 0 || nj2 >= gridH) { particle.trail.push(cur); continue; }
+          const nIdx2 = nj2 * gridW + ni2;
+          if (gridCount[nIdx2] === 0 || !isInFieldBounds(nIdx2)) { particle.trail.push(cur); continue; }
+          cur = nIdx2;
+          particle.trail.push(cur);
+        }
+      }
+    }
+
+    updateSurfaceFlowGeometry();
+  }
+
+  function removeSurfaceFlow() {
+    if (surfaceFlowMesh) {
+      scene.remove(surfaceFlowMesh);
+      surfaceFlowMesh.geometry.dispose();
+      surfaceFlowMesh.material.dispose();
+      surfaceFlowMesh = null;
+    }
+    surfaceFlowData = null;
+  }
+
+  function removeRain() {
+    if (rainParticles) {
+      scene.remove(rainParticles);
+      rainParticles.geometry.dispose();
+      rainParticles.material.dispose();
+      rainParticles = null;
+    }
+    rainActive = false;
+  }
+
+  function updateRain() {
+    if (!rainActive || !rainParticles) return;
+    const pos = rainParticles.geometry.attributes.position.array;
+    const speed = rainParticles._speed;
+    const topY = rainParticles._topY;
+    const bottomY = rainParticles._bottomY;
+    const halfX = rainParticles._halfX;
+    const halfZ = rainParticles._halfZ;
+    const ox = rainParticles._offsetX || 0;
+    const oz = rainParticles._offsetZ || 0;
+    const streakLen = rainParticles._streakLen;
+    const count = rainParticles._count;
+
+    for (let i = 0; i < count; i++) {
+      pos[i*6+1] -= speed; // top vertex Y
+      pos[i*6+4] -= speed; // bottom vertex Y
+
+      // Reset if below ground
+      if (pos[i*6+4] < bottomY) {
+        const x = ox + (Math.random() - 0.5) * 2 * halfX;
+        const z = oz + (Math.random() - 0.5) * 2 * halfZ;
+        pos[i*6] = x;
+        pos[i*6+1] = topY;
+        pos[i*6+2] = z;
+        pos[i*6+3] = x;
+        pos[i*6+4] = topY - streakLen;
+        pos[i*6+5] = z;
+      }
+    }
+    rainParticles.geometry.attributes.position.needsUpdate = true;
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    updateRain();
+    stepSurfaceFlow();
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  // Controls
+  document.getElementById('exaggeration').addEventListener('input', function() {
+    document.getElementById('exag-val').textContent = this.value + 'x';
+  });
+  document.getElementById('btn-reload').addEventListener('click', () => {
+    if (rawData.length > 0) {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('loading-text').textContent = '再構築中...';
+      setTimeout(() => buildScene(), 50);
+    }
+  });
+  document.getElementById('show-points').addEventListener('change', function() {
+    if (pointsMesh) pointsMesh.visible = this.checked;
+  });
+  document.getElementById('render-mode').addEventListener('change', () => {
+    if (rawData.length > 0) {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('loading-text').textContent = '表示モード変更中...';
+      setTimeout(() => buildScene(), 50);
+    }
+  });
+  document.getElementById('btn-rain').addEventListener('click', () => {
+    if (!simGrid) return;
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('loading-text').textContent = '雨水シミュレーション計算中...';
+    setTimeout(() => runRainSimulation(), 50);
+  });
+  document.getElementById('btn-rain-clear').addEventListener('click', () => {
+    if (waterMesh) { scene.remove(waterMesh); waterMesh.geometry.dispose(); waterMesh = null; }
+    if (flowLinesMesh) { scene.remove(flowLinesMesh); flowLinesMesh.geometry.dispose(); flowLinesMesh = null; }
+    removeRain();
+    removeSurfaceFlow();
+    document.getElementById('btn-rain-clear').style.display = 'none';
+  });
+
+  // Clear all scene objects
+  function clearScene() {
+    if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); if (terrainMesh.material.map) terrainMesh.material.map.dispose(); terrainMesh.material.dispose(); terrainMesh = null; }
+    if (pointsMesh) { scene.remove(pointsMesh); pointsMesh.geometry.dispose(); pointsMesh.material.dispose(); pointsMesh = null; }
+    if (waterMesh) { scene.remove(waterMesh); waterMesh.geometry.dispose(); waterMesh = null; }
+    if (flowLinesMesh) { scene.remove(flowLinesMesh); flowLinesMesh.geometry.dispose(); flowLinesMesh = null; }
+    removeRain();
+    removeSurfaceFlow();
+    document.getElementById('btn-rain-clear').style.display = 'none';
+  }
+
+  // Import new CSV
+  document.getElementById('btn-import').addEventListener('click', () => {
+    document.getElementById('file-import').click();
+  });
+  document.getElementById('file-import').addEventListener('change', (e) => {
+    if (e.target.files[0]) {
+      clearScene();
+      loadFile(e.target.files[0]);
+      e.target.value = ''; // reset so same file can be re-selected
+    }
+  });
+
+  // Delete data and return to drop zone
+  document.getElementById('btn-delete').addEventListener('click', () => {
+    clearScene();
+    rawData = [];
+    simGrid = null;
+    document.getElementById('controls').style.display = 'none';
+    document.getElementById('info').style.display = 'none';
+    document.getElementById('legend').style.display = 'none';
+    dropZone.classList.remove('hidden');
+  });
+})();
+</script>
+</body>
+</html>
